@@ -1,0 +1,173 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require("../app");
+var debug = require("debug")("awesomeprojectbe:server");
+var http = require("http");
+const socketio = require("socket.io");
+
+const { updateUser, getUser } = require("../routes/services");
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || "3001");
+app.set("port", port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+
+const io = socketio(server, {
+  cors: {
+    origins: ["http://localhost:19006/"],
+    methods: ["GET", "POST"],
+  },
+});
+
+io.on("connection", (socket) => {
+  let userid;
+
+  socket.on("join", ({ username, checkForPending }, callback) => {
+    userid = username;
+    socket.join(`${username}`);
+    // const { updateUser } = require("../routes/services");
+
+    const filter = { username };
+    const update = { isOffline: "false" };
+    updateUser(filter, update);
+
+    if (checkForPending) {
+      getUser({ username: `${username}` }).then((userInfo) => {
+        const messagesArr = userInfo.pending;
+        if (messagesArr.length) {
+          socket.emit("pendingMessages", { messages: messagesArr }, () => {
+            // rerase the pending messages
+            console.log("hellos...callback triggerred");
+            const filter = { username: userid };
+            const update = { $set: { pending: [] } };
+            console.log(filter, "........filter")
+            updateUser(filter, update).then(data => console.log("....updated...", data));
+          });
+        }
+      });
+    }
+
+    // offlineFlag = userInfo.isOffline;
+
+    callback();
+  });
+
+  socket.on("sendMessage", async ({ message, from, to, isOffline }) => {
+    let offlineFlag = isOffline;
+    if (!offlineFlag) {
+      const userInfo = await getUser({ username: `${to}` });
+      offlineFlag = userInfo.isOffline;
+    }
+    if (isOffline === "true") {
+      const filter = { username: `${to}` };
+      const update = {
+        $push: { pending: JSON.stringify({ from, to, message }) },
+      };
+      updateUser(filter, update).then((data) =>
+        console.log("..output ", data, "..end")
+      );
+      if (!isOffline) {
+        socket.emit("chatteStatus", { offlineStatus: "true" });
+      }
+    } else {
+      io.to(`${to}`).emit("message", { message, from, to });
+      if (!isOffline) {
+        socket.emit("chatteStatus", { offlineStatus: "false" });
+      }
+    }
+    // callback();
+  });
+
+  socket.on("checkOnline", async ({ username }) => {
+    const userInfo = await getUser({ username: `${username}` });
+    offlineFlag = userInfo.isOffline;
+    socket.emit("chatteStatus", { offlineStatus: offlineFlag });
+  });
+
+  socket.on("disconnect", () => {
+    const filter = { username: userid };
+    const update = { isOffline: "true" };
+    if (userid) {
+      updateUser(filter, update).then(
+        (data) => ("..output ", data, "..end disconnecged")
+      );
+    }
+  });
+});
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+
+server.on("error", onError);
+server.on("listening", onListening);
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== "listen") {
+    throw error;
+  }
+
+  var bind = typeof port === "string" ? "Pipe " + port : "Port " + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case "EACCES":
+      console.error(bind + " requires elevated privileges");
+      process.exit(1);
+      break;
+    case "EADDRINUSE":
+      console.error(bind + " is already in use");
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === "string" ? "pipe " + addr : "port " + addr.port;
+  debug("Listening on " + bind);
+}
